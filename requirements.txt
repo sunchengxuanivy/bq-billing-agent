@@ -1,0 +1,10 @@
+google-adk
+google-genai
+pandas
+db-dtypes
+litellm
+toolbox-langchain
+langchain
+immutabledict
+sqlglot
+fastapi
