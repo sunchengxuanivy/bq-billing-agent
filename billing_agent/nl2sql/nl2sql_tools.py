@@ -109,7 +109,7 @@ def load_business_context(callback_context: CallbackContext) -> None:
         callback_context.state.update(
             {'PUBLIC_DOCS': f"{table_explanation}\n\n{bq_examples}"})
 
-    # TODO: treat raw client input as the question. text only.
+    # # TODO: treat raw client input as the question. text only.
     callback_context.state.update(
         {'QUESTION': callback_context._invocation_context.user_content.parts[0].text})
     # print(callback_context.state.to_dict())
