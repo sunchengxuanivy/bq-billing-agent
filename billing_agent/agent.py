@@ -23,6 +23,7 @@ db_agent = SequentialAgent(
     ]
 )
 
+
 async def call_db_agent(
     question: str,
     tool_context: ToolContext,
@@ -34,15 +35,6 @@ async def call_db_agent(
         args={"request": question}, tool_context=tool_context
     )
     return db_agent_output
-
-
-# --- Tool Definition ---
-def exit_loop(tool_context: ToolContext):
-    """Call this function ONLY when the critique indicates no further changes are needed, signaling the iterative process should end."""
-    print(f"  [Tool Call] exit_loop triggered by {tool_context.agent_name}")
-    tool_context.actions.escalate = True
-    # Return empty dict as tools should typically return JSON-serializable output
-    return {}
 
 
 root_agent = LlmAgent(
@@ -84,32 +76,3 @@ QUESTION:
 
     before_agent_callback=load_business_context
 )
-
-# root_agent = LoopAgent(
-#     name="intention_loop",
-#     # Agent order is crucial: Critique first, then Refine/Exit
-#     sub_agents=[
-#         intend_agent
-#     ],
-#     max_iterations=5  # Limit loops
-# )
-
-
-# date_today = date.today()
-
-# root_agent = LlmAgent(
-#     name="db_ds_multiagent",
-#     model='gemini-2.5-flash',
-#     instruction=return_instructions_root(),
-#     global_instruction=f"""
-# You are a Data Science and Data Analytics Multi Agent System.
-# Todays date: {date_today}
-#     """,
-#     tools=[
-#         call_db_agent,
-#         # call_ds_agent,
-#     ],
-
-#     generate_content_config=types.GenerateContentConfig(temperature=0.01),
-
-# )
