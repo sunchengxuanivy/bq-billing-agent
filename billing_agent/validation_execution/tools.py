@@ -69,7 +69,7 @@ def bigquery_validation(callback_context: CallbackContext
                     for (key, value) in row.items()
                 }
                 for row in results
-            ][:1]
+            ]
             # return f"Valid SQL. Results: {rows}"
             callback_context.state.update({'VALIDATION_EXIT': True})
             callback_context.state.update({'VALIDATION_ERROR': ""})
