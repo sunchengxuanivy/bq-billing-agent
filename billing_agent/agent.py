@@ -28,6 +28,8 @@ async def call_db_agent(
     question: str,
     tool_context: ToolContext,
 ):
+    
+    tool_context.state.update({'MODIFIED_SQL':None})
 
     agent_tool = AgentTool(agent=db_agent)
 

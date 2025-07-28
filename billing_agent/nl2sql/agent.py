@@ -12,7 +12,6 @@ nl2sql_agent = LlmAgent(
     model=os.getenv('AGENT_MODEL', 'gemini-2.5-flash'),
     instruction=NL2SQL_PROMPT,
     output_key='PROTOTYPE_SQL',
-    before_agent_callback=load_business_context,
     generate_content_config=types.GenerateContentConfig(temperature=0.01),
 )
 
@@ -31,5 +30,4 @@ generate_raw_sql_agent = SequentialAgent(
     # Run parallel research first, then merge
     sub_agents=[nl2sql_agent, expand_agent],
     description="Coordinates sequential nl2sql and expand_agent to get the right SQL statement.",
-    before_agent_callback=load_business_context
 )
