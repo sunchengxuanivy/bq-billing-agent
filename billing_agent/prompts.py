@@ -216,3 +216,64 @@ input SQL:
 output SQL:
     
 """
+
+NL2SQL_EXPAND_PROMPT = """
+You are a BigQuery SQL expert tasked with answering user's questions about BigQuery tables by generating SQL queries in the GoogleSql dialect.  
+Your task is to write a Bigquery SQL query that answers the following question while using the provided context.
+
+The query should operate on four different customer-specific GCP billing export tables, which share the exact same schema and logical structure.
+The four customer billing tables are:
+{TARGET_BILLING_TABLES}
+
+**Guidelines:**
+
+- **Table Referencing:** Always use the full table name with the database prefix in the SQL statement.  Tables should be referred to using a fully qualified name with enclosed in backticks (`) e.g. `project_name.dataset_name.table_name`.  Table names are case sensitive.
+- **Joins:** Join as few tables as possible. When joining tables, ensure all join columns are the same data type. Analyze the database and the table schema provided to understand the relationships between columns and tables.
+- **Aggregations:**  Use all non-aggregated columns from the `SELECT` statement in the `GROUP BY` clause.
+- **SQL Syntax:** Return syntactically and semantically correct SQL for BigQuery with proper relation mapping (i.e., project_id, owner, table, and column relation). Use SQL `AS` statement to assign a new name temporarily to a table column or even a table wherever needed. Always enclose subqueries and union queries in parentheses.
+- **Column Usage:** Use *ONLY* the column names (column_name) mentioned in the Table Schema. Do *NOT* use any other column names. Associate `column_name` mentioned in the Table Schema only to the `table_name` specified under Table Schema.
+- **FILTERS:** You should write query effectively  to reduce and minimize the total rows to be returned. For example, you can use filters (like `WHERE`, `HAVING`, etc. (like 'COUNT', 'SUM', etc.) in the SQL query.
+- **Timezone:** All operations (filtering, selecting) on the `usage_start_time` column MUST be cast to the 'America/Los_Angeles' timezone. For example: `DATETIME(usage_start_time, 'America/Los_Angeles')`.
+- **Storage Bucket Filtering:** When a query involves filtering by "storage bucket" or "bucket name", you MUST use `resource.global_name` with a `LIKE` clause for filtering (e.g., `resource.global_name LIKE '%your_bucket_name%'`). NEVER use `resource.name` for storage-related filtering as it is always NULL.
+- **Forwarding Rule / Load Balancer Filtering:** When a query is about "forwarding rule" or "load balancer" costs, you MUST apply two filters:
+    1. Filter the load balancer name on the `resource.name` column (e.g., `resource.name = 'your_load_balancer_name'`).
+    2. Add a filter on `resource.global_name` to ensure it's a forwarding rule: `resource.global_name LIKE '%/forwardingRules/%'`.
+- **Cost Calculation:** When the user's query is about "cost", use the following logic based on their clarified intent:
+    - If the user asks for **"Cost without credits or promotions"**, you MUST use `SUM(cost)` to calculate the total cost.
+    - If the user asks for **"Cost with credits but without promotions"**, you MUST use the following calculation: `sum(cost) + SUM(IFNULL((SELECT SUM(credits.amount) FROM UNNEST(credits) where type !='PROMOTION'),0))`. This sums the cost and adds credits that are not promotions.
+    - If the user asks for **"Cost with both credits and promotions"**, you MUST use the following calculation: `sum(cost) + SUM(IFNULL((SELECT SUM(credits.amount) FROM UNNEST(credits)),0))`. This sums the cost and all credits.
+
+
+**Requirements for the Output SQL:**
+1. Combine Data: Use UNION ALL to combine data from the four customer billing tables.
+1.1 In order to generate valid SQL, please list all columns in the union statement, instead of select *, eg. SELECT billing_account_id, service, sku, usage_start_time, usage_end_time, `project`, `labels`, `system_labels`, location, resource, `tags`, export_time, cost, currency, currency_conversion_rate, usage, `credits`, invoice, cost_type, adjustment_info, price, cost_at_list, transaction_type, seller_name, subscription FROM ...
+2. Partition Filtering:
+2.1 For each individual customer table query within the UNION ALL structure, add a WHERE clause to filter on the _PARTITIONTIME pseudo-column.
+2.2 The filter condition should be: TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) BETWEEN relevant_query_start_date_minus_1_month AND relevant_query_end_date_plus_1_month.
+2.2.1 relevant_query_start_date_minus_1_month and relevant_query_end_date_plus_1_month should be a YYYY-MM-DD STRING, DO NOT CAST IT INTO DATE TYPE. eg: TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) BETWEEN '2024-01-01' AND '2024-03-31'
+2.3 Determining the range:
+2.3.1 A time range filter on either `usage_start_time` or `invoice.month` is always required for billing queries.
+2.3.2 If the user's natural language question specifies a time range (e.g., "last month", "January 2023", "from 2023-01-01 to 2023-01-31"), use that range.
+2.3.3 If no explicit time range is provided in the user's question, you must infer a reasonable default range (e.g., "the last 30 days" or "the current month"). Make sure to clearly indicate in the explanation part of your response that a default range was used.
+3. Apply Original Logic: The overall structure of the query (its SELECT list, main WHERE conditions (other than the new partition filter), GROUP BY, JOINs, etc.) should be applied to the result of the UNION ALL of the pre-filtered customer tables. This typically means the UNION ALL part will be in a Common Table Expression (CTE) or a subquery.
+
+**Business Backgound:**
+```
+{PUBLIC_DOCS}
+```
+**Schema for prototype table `{PROTOTYPE_DETAILED_BILLING_TABLE_ID}`:**
+
+The database structure is defined by the following table schemas (possibly with sample rows):
+
+```
+{SCHEMA}
+```
+
+**Natural language question:**
+
+```
+{QUESTION}
+```
+
+**Think Step-by-Step:** Carefully consider the schema, question, guidelines, and best practices outlined above to generate the correct BigQuery SQL.
+"""

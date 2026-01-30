@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import AsyncGenerator
 from google.adk.events import Event, EventActions
@@ -32,43 +33,33 @@ You are a BigQuery SQL expert. Your task is to correct the input Bigquery SQL qu
     output_key='MODIFIED_SQL'
 )
 
-# SQL Validator agent that checks if the SQL is valid using bigquery_validation
-sql_validator_agent = LlmAgent(
-    name="sql_validator_agent",
-    model=os.getenv('AGENT_MODEL', 'gemini-2.5-flash'),
-    instruction="""
-You are a BigQuery SQL validator. Your task is to check if the SQL statement is valid.
-
-**Guidelines:**
- - retrieve the session state, and generate the final result in JSON format with four keys: "sql", "sql_error", "sql_query_results"
-   "sql": {MODIFIED_SQL}
-   "sql_error": {VALIDATION_ERROR}
-   "sql_query_results": {QUERY_RESULTS}
-""",
-    before_agent_callback=bigquery_validation,
-    output_key='VALIDATION_RESULT'  # Store validation result
-)
 
 # Custom agent to check the status and escalate if validation is successful
 
 
 class CheckStatusAndEscalate(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        logging.debug("Entering CheckStatusAndEscalate")
+        bigquery_validation(ctx)
         should_stop = ctx.session.state.get("VALIDATION_EXIT", False)
-        print(f"CheckStatusAndEscalate: VALIDATION_EXIT = {should_stop}")
+        logging.debug(
+            f"CheckStatusAndEscalate: VALIDATION_EXIT = {should_stop}")
 
         # Always escalate if validation was successful
         if should_stop:
-            print("SQL validation successful - stopping the loop")
+            logging.debug("SQL validation successful - stopping the loop")
             yield Event(
                 author=self.name,
-                actions=EventActions(escalate=True)
+                actions=EventActions(
+                    escalate=True, state_delta=ctx.session.state),
+
             )
         else:
-            print("SQL validation failed - continuing the loop")
+            logging.debug("SQL validation failed - continuing the loop")
             yield Event(
                 author=self.name,
-                actions=EventActions(escalate=False)
+                actions=EventActions(
+                    escalate=False, state_delta=ctx.session.state)
             )
 
 
@@ -76,7 +67,6 @@ class CheckStatusAndEscalate(BaseAgent):
 refine_loop_agent = LoopAgent(
     name="RefinementLoop",
     sub_agents=[
-        sql_validator_agent,  # First validate the SQL
         # Check if we should stop the loop
         CheckStatusAndEscalate(name="stop_checker"),
         sql_refiner_agent,    # Only refine if we didn't stop
@@ -84,32 +74,12 @@ refine_loop_agent = LoopAgent(
     max_iterations=5,  # Limit loops to 5 iterations as required
 )
 
-report_composer = LlmAgent(
-    model=os.getenv('AGENT_MODEL', 'gemini-2.5-flash'),
-    name="sql_validation_summary",
-    include_contents="none",
-    description="Transforms sql validation into a final answer.",
-    instruction="""
-    Transform the provided data into a polished, professional answer.
-
-    ---
-    ### the final result in JSON format including below
-   "raw sql": {MODIFIED_SQL}
-   "final sql": {MODIFIED_SQL}
-   "final sql error": {VALIDATION_ERROR}
-   "final sql results": {QUERY_RESULTS}
-
- 
-    """,
-    output_key="FINAL_ANSWER",
-)
 
 refine_agent = SequentialAgent(
     name='refine_agent_pipeline',
     description="Executes a pre-defined refine pipeline. It performs sql validation, refine, and execution.",
     sub_agents=[
-        refine_loop_agent,
-        report_composer
+        refine_loop_agent
     ]
 )
 # root_agent = LlmAgent(
@@ -121,7 +91,7 @@ refine_agent = SequentialAgent(
 
 # Guidelines:
 # 1. You must deligate the task to the `refine_agent` to verify, refine and execute the user input SQL.
-# 2. DO not perform any sql statements by yourself, your job is to pass the task to `refine_agent` and summarize the appropreate response. 
+# 2. DO not perform any sql statements by yourself, your job is to pass the task to `refine_agent` and summarize the appropreate response.
 # 3. Summarize the session state into final result in JSON format with four keys: "sql", "sql_error", "sql_query_results"
 # """
 # )

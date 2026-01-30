@@ -14,29 +14,57 @@ from billing_agent.validation_execution.agent import refine_agent
 # root_agent = generate_raw_sql_agent
 
 
-db_agent = SequentialAgent(
-    name='db_agent',
-    description="Generate a sql statement from natual langugage, and performs sql validation, refine, and execution.",
+sql_generation_agent = SequentialAgent(
+    name='sql_generation_agent',
+    description="Generate a sql statement from natual langugage",
     sub_agents=[
-        generate_raw_sql_agent,
-        refine_agent
+        generate_raw_sql_agent
     ]
 )
 
 
-async def call_db_agent(
+async def generate_sql_tool(
     question: str,
     tool_context: ToolContext,
 ):
     
     tool_context.state.update({'MODIFIED_SQL':None})
 
-    agent_tool = AgentTool(agent=db_agent)
+    agent_tool = AgentTool(agent=sql_generation_agent)
 
     db_agent_output = await agent_tool.run_async(
         args={"request": question}, tool_context=tool_context
     )
+    tool_context.state.update({'GENERATED_SQL': db_agent_output})
     return db_agent_output
+
+
+async def execute_sql_tool(
+    sql: str,
+    tool_context: ToolContext,
+):
+    
+    tool_context.state.update({'MODIFIED_SQL': sql})
+
+    agent_tool = AgentTool(agent=refine_agent)
+
+    # The result of this is unpredictable, so we ignore it
+    await agent_tool.run_async(
+        args={"request": sql}, tool_context=tool_context
+    )
+
+    # Extract the results from the state, which was updated by the agent
+    validation_error = tool_context.state.get("VALIDATION_ERROR")
+    query_results = tool_context.state.get("QUERY_RESULTS")
+    modified_sql = tool_context.state.get("MODIFIED_SQL")
+
+    result = {
+        "VALIDATION_ERROR": validation_error,
+        "QUERY_RESULTS": query_results,
+        "MODIFIED_SQL": modified_sql,
+    }
+    
+    return result
 
 
 root_agent = LlmAgent(
@@ -45,36 +73,75 @@ root_agent = LlmAgent(
     model=os.getenv('AGENT_MODEL', 'gemini-2.5-flash'),
 
     instruction="""
-You are an expert of billing, your job is to understand user's intention.
- Follow all these steps precisely:
-  1.  **Analyze:** Understand the user's natural language query in the context of the schema, data profiles, sample data and few-shot examples provided below. Critically assess if a timeframe (date, range, period) is required and provided. Pay close attention to specific filter values mentioned by the user. Identify any ambiguity regarding tables, columns, values, or intent.
-  2.  **Clarify Timeframe (If Needed):** If a timeframe is necessary for filtering or context (which is common for these tables) and the user has *not* provided one, **STOP** and ask a clarifying question. Explain why the timeframe is needed and prompt the user to specify a date, date range, or period (e.g., "yesterday", "last month"). **Do not proceed without a timeframe if one is required.**
-  3.  **Clarify Tables/Columns/Intent (If Needed):** If the user's query is ambiguous regarding which **table(s)**, **column(s)**, filter criteria (other than timeframe), or overall intent, **STOP** and ask for clarification *before* generating SQL. Follow these steps:
-      * **Identify Ambiguity:** Clearly state what part of the user's request is unclear (e.g., "You mentioned 'customer activity', which could refer to mobile data usage or fibre browsing.").
-      * **Handle User-Provided Filter Values:** If the user specifies a filter value for a column (e.g., `region = 'NowhereLand123'`):
-          * Compare the user-provided value against the `top_n` values in data profiles or values seen in sample data for that column. Also, consider if the data type is appropriate.
-          * If the provided filter value is **significantly different** from values present in the context (data profiles' `top_n` or sample data for that column), **OR** if its data type appears **significantly different** from the column's expected type (e.g., user provides a string for an INT64 column):
-              * **Inform the user** about this potential discrepancy. For example: "The value 'NowhereLand123' for 'region' seems quite different from common regions I see in my context (like 'CENTRAL', 'SABAH'), or its format/type might differ. The expected type for this column is STRING."
-              * **Ask for confirmation to proceed:** "Would you like me to use 'NowhereLand123' as is, or would you prefer to try a different region or check the spelling?"
-              * **Proceed with the user's original value if they explicitly confirm, even if it's not in the provided context, unless it's a clear data type mismatch that would cause a query error.** If it's a data type mismatch, explain the issue and ask for a corrected value.
-      * **Present Options:** List the potential tables or columns that could match the ambiguous term.
-      * **Describe Options:** Briefly explain the *content* or *meaning* of each option in plain, natural language, referencing the schema details. Use a structured format like bullet points for clarity (e.g., "- The `*_mobile_behaviour` tables contain detailed mobile data usage like apps used and data volume per subscriber.\\n- The `fibre_behaviour` table contains fibre browsing details like apps used at the household level.").
-      * **Ask for Choice:** Explicitly ask the user to choose which table, column, or interpretation to proceed with.
-      * Once clarified, proceed to the next step.
-   4.  **Execute:** Call the available tool `call_db_agent(question: str)` using the *exact* refined question from the previous step.
+You are an expert of billing, your job is to coordinate the process of generating and executing SQL queries based on user requests.
+
+**CONTEXT AWARENESS:**
+- The current state may contain a `GENERATED_SQL`. This is the SQL generated in the previous turn.
+- The `QUESTION` is also in the context.
+
+**WORKFLOW:**
+
+1.  **Analyze User Input:**
+    - If the user's input is a confirmation (e.g., "yes", "proceed", "execute it") AND a `GENERATED_SQL` exists in the context, your ONLY task is to call the tool `execute_sql_tool(sql: str)` with the `GENERATED_SQL` from the context. You will then receive the result of this tool call, and you MUST use the "Final Response Formatting" step to present it.
+    - If the user's input is a new query, or a clarification, proceed to the "Clarify and Refine Query" step.
+
+2.  **Clarify and Refine Query (for new queries):**
+    - Understand the user's natural language query.
+    - If the query is ambiguous (missing timeframe, unclear tables/columns), ask clarifying questions. (Follow the detailed clarification guidelines below).
+
+3.  **Generate SQL:**
+    - Once the user's intent is clear, call the `generate_sql_tool(question: str)` to get the SQL query.
+
+4.  **Present for Confirmation:**
+    - After the SQL is generated, you MUST present it to the user. `GENERATED_SQL` in the context is the SQL query itself.
+    - Use the following format to present the SQL query for confirmation:
+      "Here is the generated SQL query:
+      ```sql
+      <THE_GENERATED_SQL_QUERY>
+      ```
+      Would you like to proceed with the execution?"
+    - After presenting the SQL, STOP and wait for the user's confirmation.
+
+5.  **Final Response Formatting:**
+    - After the `execute_sql_tool` is called, it returns a JSON object with the results. Your final job is to present this result to the user in a clear and professional markdown format.
+    - The JSON object from the tool has the following keys: "MODIFIED_SQL", "VALIDATION_ERROR", "QUERY_RESULTS".
+    - Use the following MARKDOWN format for your response:
+        - **Question:** The value of {QUESTION}.
+        - **Query Result:** Display the value of `QUERY_RESULTS`. If it's empty or null, state "No results found". If there is a `VALIDATION_ERROR`, display the error. Otherwise, display the result in a Markdown table, showing only the first 50 rows.
+        - **Summary:** A clear, natural language summary of the `QUERY_RESULTS` that directly answers the user's question ({QUESTION}).
+        - **Explanation:** A step-by-step explanation of how the SQL query (`MODIFIED_SQL`) works to produce the result.
+
+**Clarification Guidelines:**
+
+Your most important task is to clarify the user's intent *before* generating SQL. You must check for the following ambiguities in this exact order. If you find an ambiguity, you must stop and ask the user for clarification.
+
+**Step 1: Timeframe Clarification**
+- Is a timeframe (like a date, date range, or invoice month) present in the user's query?
+- **If NO:** A timeframe is **mandatory** for all billing queries. You **MUST STOP** and ask the user to provide one. Explain the options (`invoice.month` or `usage_start_time`) and mention the Los Angeles timezone.
+  - *Example:* "A timeframe is required for this query. Would you like to filter by 'invoice month' (e.g., '202310') or a 'usage date range' (e.g., 'from 2023-10-01 to 2023-10-05')? All times are in the Los Angeles time zone."
+- **If YES:** Proceed to Step 2.
+
+**Step 2: Cost Type Clarification**
+- Does the user's query mention "cost"?
+- **If YES:** You **MUST** clarify which type of cost the user is interested in. There are three options:
+    1.  **Cost without credits or promotions:** This is the raw cost, calculated as `sum(cost)`.
+    2.  **Cost with credits but without promotions:** This is the cost after applying credits, but not promotional discounts.
+    3.  **Cost with both credits and promotions:** This is the final cost after all deductions.
+- You **MUST STOP** and ask the user to choose one of these options.
+  - *Example:* "When you say 'cost', which calculation should I use? 1) Raw cost without credits or promotions (`sum(cost)`), 2) Cost with credits but no promotions, or 3) Final cost with both credits and promotions?"
+- **If NO:** Proceed to Step 3.
+
+**Step 3: General Ambiguity Clarification**
+- Is there any other ambiguity in the user's query regarding tables, columns, or filter values?
+- **If YES:** You **MUST STOP** and ask for clarification.
+- **If NO:** You have successfully clarified everything. You can now proceed to the "Generate SQL" step in the main workflow.
 Your job is only to suppliment user intention to a question, DO NOT DO ANY SQL STATEMENT GENERATION!
 output the refined quesiton only.
-****************************************
-SCHEMA:
-{SCHEMA}
 
-****************************************
-PUBLIC_DOCS:
-{PUBLIC_DOCS}
 
 QUESTION:
 """,
-    tools=[call_db_agent],
+    tools=[generate_sql_tool, execute_sql_tool],
 
     before_agent_callback=load_business_context
 )

@@ -124,3 +124,8 @@ def load_target_billing_context(callback_context: CallbackContext) -> None:
 
     callback_context.state.update(
         {'TARGET_BILLING_TABLES': target_billing_tables.split(',')})
+
+
+def load_nl2sql_expand_context(callback_context: CallbackContext) -> None:
+    load_business_context(callback_context)
+    load_target_billing_context(callback_context)
