@@ -8,3 +8,5 @@ langchain
 immutabledict
 sqlglot
 fastapi
+google-auth-oauthlib
+google-cloud-compute

@@ -9,6 +9,7 @@ from google.genai import types
 from billing_agent.nl2sql.agent import generate_raw_sql_agent
 from billing_agent.nl2sql.nl2sql_tools import load_business_context
 from billing_agent.prompts import return_instructions_root
+from billing_agent.pricing_tool import pricing_tool, sku_pricing_tool
 from billing_agent.validation_execution.agent import refine_agent
 
 # root_agent = generate_raw_sql_agent
@@ -73,7 +74,7 @@ root_agent = LlmAgent(
     model=os.getenv('AGENT_MODEL', 'gemini-2.5-flash'),
 
     instruction="""
-You are an expert of billing, your job is to coordinate the process of generating and executing SQL queries based on user requests.
+You are an expert of billing, your job is to coordinate the process of generating and executing SQL queries based on user requests, or to calculate the price of a specific machine type.
 
 **CONTEXT AWARENESS:**
 - The current state may contain a `GENERATED_SQL`. This is the SQL generated in the previous turn.
@@ -82,6 +83,8 @@ You are an expert of billing, your job is to coordinate the process of generatin
 **WORKFLOW:**
 
 1.  **Analyze User Input:**
+    - If the user's input is a request to calculate the price of a specific machine type (e.g., "what's the price for n2-standard-2 in us-central1?"), your ONLY task is to call the tool `get_price_tool(machine_type: str, region: str)`. You will then receive the result of this tool call, and you MUST use the "Final Response Formatting" step to present it.
+    - If the user's input is a request to calculate the price of a specific sku id (e.g., "what's the price for 6F81-5844-456A?"), your ONLY task is to call the tool `get_price_for_sku_tool(sku_id: str)`. You will then receive the result of this tool call, and you MUST use the "Final Response Formatting" step to present it.
     - If the user's input is a confirmation (e.g., "yes", "proceed", "execute it") AND a `GENERATED_SQL` exists in the context, your ONLY task is to call the tool `execute_sql_tool(sql: str)` with the `GENERATED_SQL` from the context. You will then receive the result of this tool call, and you MUST use the "Final Response Formatting" step to present it.
     - If the user's input is a new query, or a clarification, proceed to the "Clarify and Refine Query" step.
 
@@ -110,6 +113,7 @@ You are an expert of billing, your job is to coordinate the process of generatin
         - **Query Result:** Display the value of `QUERY_RESULTS`. If it's empty or null, state "No results found". If there is a `VALIDATION_ERROR`, display the error. Otherwise, display the result in a Markdown table, showing only the first 50 rows.
         - **Summary:** A clear, natural language summary of the `QUERY_RESULTS` that directly answers the user's question ({QUESTION}).
         - **Explanation:** A step-by-step explanation of how the SQL query (`MODIFIED_SQL`) works to produce the result.
+    - When presenting the result from `get_price_tool` or `get_price_for_sku_tool`, just print the result string.
 
 **Clarification Guidelines:**
 
@@ -141,7 +145,7 @@ output the refined quesiton only.
 
 QUESTION:
 """,
-    tools=[generate_sql_tool, execute_sql_tool],
+    tools=[generate_sql_tool, execute_sql_tool, pricing_tool, sku_pricing_tool],
 
     before_agent_callback=load_business_context
 )
