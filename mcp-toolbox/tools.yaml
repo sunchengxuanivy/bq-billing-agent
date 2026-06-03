@@ -1,0 +1,109 @@
+sources:
+  gcp_finops_bq:
+    kind: bigquery
+    project: "google.com:not-keelia" 
+
+tools:
+  get_executive_cost_trend:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Retrieves a high-level, month-over-month summary of total gross cost, credits (discounts), and net cost across the entire organization."
+    statement: |
+      SELECT invoice.month AS invoice_month, SUM(cost_at_list) AS total_list_cost, SUM(cost) AS gross_cost, SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS total_credits, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net_cost, currency FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` GROUP BY 1, 6 ORDER BY 1 DESC
+
+  get_project_cost_summary:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Retrieves a high-level summary of gross cost, total credits, net cost, and specific credit types applied per project."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format (e.g., '202604')."
+    statement: |
+      SELECT project.id AS project_id, SUM(cost) AS gross_cost, SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS total_credits, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net_cost, STRING_AGG(DISTINCT (SELECT STRING_AGG(DISTINCT c.type, ', ') FROM UNNEST(credits) c), ', ') AS applied_credit_types FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` WHERE invoice.month = @invoice_month GROUP BY 1 ORDER BY 4 DESC
+
+  get_daily_resource_spend:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Retrieves day-over-day spend down to the exact resource URI, system labels (e.g., hardware accelerators), and custom metadata to identify anomalies."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format."
+    statement: |
+      SELECT DATE(usage_start_time) AS usage_date, project.id AS project_id, resource.name AS resource_name, resource.global_name AS global_resource_uri, TO_JSON_STRING(system_labels) AS system_labels, TO_JSON_STRING(labels) AS custom_labels, TO_JSON_STRING(tags) AS org_tags, SUM(cost) AS daily_cost FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` WHERE invoice.month = @invoice_month GROUP BY 1, 2, 3, 4, 5, 6, 7 ORDER BY 8 DESC LIMIT 100
+
+  get_network_egress_costs:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Isolates data transfer and network egress costs and volumes (in GiB) by project."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format."
+    statement: |
+      SELECT project.id AS project_id, sku.description AS sku_description, SUM(usage.amount) AS total_usage_amount, ANY_VALUE(usage.unit) AS usage_unit, SUM(cost) AS egress_cost FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` WHERE invoice.month = @invoice_month AND (sku.description LIKE '%Egress%' OR sku.description LIKE '%Data Transfer%') GROUP BY 1, 2 ORDER BY 5 DESC
+
+  get_cost_by_metadata:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Groups net spend by evaluating both standard project labels (e.g., 'env') and organizational tags (e.g., 'business_unit')."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format."
+    statement: |
+      SELECT l.key AS metadata_key, l.value AS metadata_value, 'LABEL' AS metadata_source, project.id AS project_id, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net_cost FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` LEFT JOIN UNNEST(labels) l WHERE invoice.month = @invoice_month AND l.key IS NOT NULL GROUP BY 1, 2, 3, 4 UNION ALL SELECT t.key AS metadata_key, t.value AS metadata_value, 'TAG' AS metadata_source, project.id AS project_id, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net_cost FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` LEFT JOIN UNNEST(tags) t WHERE invoice.month = @invoice_month AND t.key IS NOT NULL GROUP BY 1, 2, 3, 4
+
+  get_unit_economics:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Calculates cost efficiency (unit economics) by dividing total financial cost by exact usage amounts for specific services."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format."
+    statement: |
+      SELECT project.id AS project_id, service.description AS service, sku.description AS sku, SUM(usage.amount) AS total_usage_units, ANY_VALUE(usage.unit) AS usage_metric, SUM(cost) AS total_cost, SUM(cost) / NULLIF(SUM(usage.amount), 0) AS cost_per_unit FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` WHERE invoice.month = @invoice_month GROUP BY 1, 2, 3 ORDER BY 7 DESC
+
+  get_pricing_and_discounts:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Compares list price against actual cost to identify Custom Enterprise Discounts (EDP) and isolates Marketplace vendor transactions."
+    parameters:
+      - name: invoice_month
+        type: string
+        description: "The invoice month in YYYYMM format."
+    statement: |
+      SELECT project.id AS project_id, service.description AS service, transaction_type, seller_name, SUM(cost_at_list) AS total_list_cost, SUM(cost) AS actual_cost, ROUND((1 - (SUM(cost) / NULLIF(SUM(cost_at_list), 0))) * 100, 2) AS effective_discount_percentage FROM `keelia_llc_billing_data.gcp_billing_export_resource_v1_SAMPLE_FULL` WHERE invoice.month = @invoice_month GROUP BY 1, 2, 3, 4
+
+  get_active_recommendations:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Retrieves all active GCP recommendations, including target URIs, projected savings, priorities, and deep JSON details."
+    statement: |
+      SELECT cloud_entity_type, cloud_entity_id, recommender_subtype, priority, TO_JSON_STRING(target_resources) AS target_resources_json, primary_impact.cost_projection.cost.units AS projected_monthly_savings_usd, TO_JSON_STRING(recommendation_details) AS recommendation_details_json, description FROM `keelia_llc_billing_data.recommendations_export_SAMPLE_FULL` WHERE state = 'ACTIVE' ORDER BY projected_monthly_savings_usd ASC
+
+  get_active_insights:
+    kind: bigquery-sql
+    source: gcp_finops_bq
+    description: "Retrieves the raw Active Assist telemetry (CPU utilization, network traffic) that trigger recommendations."
+    statement: |
+      SELECT cloud_entity_type, cloud_entity_id, insight_type, insight_subtype, severity, TO_JSON_STRING(target_resources) AS target_resources_json, insight_details.content AS insight_content_json, description FROM `keelia_llc_billing_data.insights_export_SAMPLE_FULL` WHERE state = 'ACTIVE'
+
+toolsets:
+  gcp-finops-executive-tools:
+    - get_executive_cost_trend
+  gcp-finops-visibility-tools:
+    - get_project_cost_summary
+    - get_daily_resource_spend
+    - get_network_egress_costs
+  gcp-finops-chargeback-tools:
+    - get_cost_by_metadata
+    - get_unit_economics
+  gcp-finops-rate-management-tools:
+    - get_pricing_and_discounts
+  gcp-finops-optimization-tools:
+    - get_active_recommendations
+    - get_active_insights
+
