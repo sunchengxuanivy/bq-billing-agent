@@ -11,6 +11,7 @@ from billing_agent.nl2sql.nl2sql_tools import load_business_context
 from billing_agent.prompts import return_instructions_root
 from billing_agent.pricing_tool import pricing_tool, sku_pricing_tool
 from billing_agent.validation_execution.agent import refine_agent
+from billing_agent.keelia_finops_agent_app.agent import finops_agent, finops_tools
 
 # root_agent = generate_raw_sql_agent
 
@@ -146,6 +147,6 @@ output the refined quesiton only.
 QUESTION:
 """,
     tools=[generate_sql_tool, execute_sql_tool, pricing_tool, sku_pricing_tool],
-
+    sub_agents=[finops_agent],
     before_agent_callback=load_business_context
 )
